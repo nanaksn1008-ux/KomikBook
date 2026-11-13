@@ -1,9 +1,20 @@
 package eu.kanade.tachiyomi.ui.home
 
+import android.graphics.BitmapFactory
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Badge
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -18,9 +29,18 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -40,16 +60,19 @@ import eu.kanade.tachiyomi.ui.library.LibraryTab
 import eu.kanade.tachiyomi.ui.manga.MangaScreen
 import eu.kanade.tachiyomi.ui.more.MoreTab
 import eu.kanade.tachiyomi.ui.updates.UpdatesTab
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import mihon.app.di.appGraph
 import soup.compose.material.motion.animation.materialFadeThroughIn
 import soup.compose.material.motion.animation.materialFadeThroughOut
 import tachiyomi.i18n.MR
 import tachiyomi.presentation.core.i18n.pluralStringResource
+import java.io.File
 
 object HomeScreen : Screen() {
 
@@ -98,32 +121,36 @@ object HomeScreen : Screen() {
                     }
                 }
 
-                NavigationSuiteScaffold(
-                    navigationSuiteType = navigationSuiteType,
-                    state = navigationSuiteState,
-                    navigationSuiteColors = NavigationSuiteDefaults.colors(
-                        navigationRailContainerColor = MaterialTheme.colorScheme
-                            .surfaceColorAtElevation(3.dp),
-                    ),
-                    navigationItemVerticalArrangement = Arrangement.Center,
-                    navigationItems = {
-                        TABS.fastForEach { NavigationSuiteItem(it, navigationSuiteType) }
-                    },
-                ) {
-                    AnimatedContent(
-                        targetState = tabNavigator.current,
-                        transitionSpec = {
-                            materialFadeThroughIn(
-                                initialScale = 1f,
-                                durationMillis = TabFadeDuration,
-                            ) togetherWith materialFadeThroughOut(durationMillis = TabFadeDuration)
+                Box(Modifier.fillMaxSize()) {
+                    NavigationSuiteScaffold(
+                        modifier = Modifier.fillMaxSize(),
+                        navigationSuiteType = navigationSuiteType,
+                        state = navigationSuiteState,
+                        navigationSuiteColors = NavigationSuiteDefaults.colors(
+                            navigationRailContainerColor = MaterialTheme.colorScheme
+                                .surfaceColorAtElevation(3.dp),
+                        ),
+                        navigationItemVerticalArrangement = Arrangement.Center,
+                        navigationItems = {
+                            TABS.fastForEach { NavigationSuiteItem(it, navigationSuiteType) }
                         },
-                        label = "tabContent",
                     ) {
-                        tabNavigator.saveableState(key = "currentTab", it) {
-                            it.Content()
+                        AnimatedContent(
+                            targetState = tabNavigator.current,
+                            transitionSpec = {
+                                materialFadeThroughIn(
+                                    initialScale = 1f,
+                                    durationMillis = TabFadeDuration,
+                                ) togetherWith materialFadeThroughOut(durationMillis = TabFadeDuration)
+                            },
+                            label = "tabContent",
+                        ) {
+                            tabNavigator.saveableState(key = "currentTab", it) {
+                                it.Content()
+                            }
                         }
                     }
+                    HomeBackgroundLayer()
                 }
             }
 
@@ -163,6 +190,68 @@ object HomeScreen : Screen() {
                 }
             }
         }
+    }
+
+    /**
+     * Lapisan gambar kustom di atas tampilan utama (transparan 20%, tidak menghalangi sentuhan).
+     * Ketuk tombol gambar untuk memilih background, tekan lama untuk menghapusnya.
+     */
+    @Composable
+    private fun BoxScope.HomeBackgroundLayer() {
+        val context = LocalContext.current
+        val file = remember { File(context.filesDir, "home_bg.img") }
+        var version by remember { mutableIntStateOf(0) }
+        val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+            if (uri != null) {
+                runCatching {
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        file.outputStream().use { output -> input.copyTo(output) }
+                    }
+                }
+                version++
+            }
+        }
+        val bitmap by produceState<ImageBitmap?>(initialValue = null, version) {
+            value = withContext(Dispatchers.IO) {
+                if (!file.exists()) {
+                    null
+                } else {
+                    runCatching {
+                        val options = BitmapFactory.Options().apply { inSampleSize = 2 }
+                        BitmapFactory.decodeFile(file.absolutePath, options)?.asImageBitmap()
+                    }.getOrNull()
+                }
+            }
+        }
+
+        val background = bitmap
+        if (background != null) {
+            Image(
+                bitmap = background,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                alpha = 0.2f,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+        Text(
+            text = "\uD83D\uDDBC",
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = 12.dp, bottom = 88.dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f))
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onTap = { picker.launch("image/*") },
+                        onLongPress = {
+                            file.delete()
+                            version++
+                        },
+                    )
+                }
+                .padding(10.dp),
+        )
     }
 
     @Composable
